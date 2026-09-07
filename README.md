@@ -17,6 +17,10 @@ Multi-branch clinic management system built as a **Semester 3 DBMS project**. Cl
 | **Clinical visits** | Doctors complete appointments with notes and treatments |
 | **Billing & insurance** | Treatment-based invoices, partial payments, insurance coverage & claims |
 | **Analytics** | SQL reporting views + Chart.js dashboards (revenue, outstanding, treatments, insurance) |
+| **Patient portal** | Self-service book / appointments / documents UI (`patient.html`) |
+| **API health check** | `GET /api/health` reports API uptime + DB reachability |
+| **Login rate limiting** | In-memory limiter on staff & patient login (HTTP 429) |
+| **CORS allow-list** | Optional `ALLOWED_ORIGINS` env (comma-separated) |
 
 ---
 
@@ -39,14 +43,18 @@ Hospital-Management-System/
 ├── run-sql.js            # Script to load database.sql into MySQL
 ├── backend/
 │   ├── server.js         # Express REST API
+│   ├── lib/              # Testable helpers (slots, billing, rate limit, CORS)
+│   ├── tests/            # Jest + Supertest suite
 │   └── package.json
 ├── frontend/
-│   ├── index.html        # Login
+│   ├── index.html        # Login (staff + patient)
 │   ├── admin.html        # Admin dashboard
 │   ├── reception.html    # Reception desk
 │   ├── doctor-portal.html
 │   ├── branch.html       # Branch manager dashboard
+│   ├── patient.html      # Patient self-service portal
 │   └── *.js / style.css
+├── TECHNICAL_REPORT_AND_INTERVIEW_GUIDE.md
 ├── firebase.json         # Firebase Hosting config
 └── package.json          # Root helpers (dotenv, mysql2 for run-sql.js)
 ```
@@ -91,8 +99,35 @@ Hospital-Management-System/
 | **Receptionist** | `reception.html` | Patients, appointments, schedules, invoices & payments (branch-scoped) |
 | **Doctor** | `doctor-portal.html` | Appointments, complete visits, patient history, weekly availability |
 | **Branch Manager** | `branch.html` | Branch dashboard, appointments, staff, invoices, branch reports |
+| **Patient** | `patient.html` | Book appointments, view own appointments & documents |
 
-Patient REST APIs are implemented on the backend; a dedicated patient UI is not included in `frontend/`.
+Patient portal login: choose **Patient** on the login page (first name + derived password `MMDD` + patient ID).
+
+---
+
+## Testing
+
+Backend unit/integration tests use **Jest** and **Supertest**.
+
+```bash
+cd backend
+npm install
+npm test
+```
+
+Coverage includes:
+
+- Slot generation & overlap helpers (`lib/slots.js`)
+- Invoice / overpayment / DOB helpers (`lib/billing.js`)
+- Rate limiter & CORS allow-list (`lib/rateLimit.js`, `lib/corsOptions.js`)
+- `GET /api/health` smoke test
+
+Optional env for production hardening:
+
+```env
+ALLOWED_ORIGINS=https://your-firebase-app.web.app,http://localhost:3000
+LOGIN_RATE_LIMIT_MAX=20
+```
 
 ---
 
