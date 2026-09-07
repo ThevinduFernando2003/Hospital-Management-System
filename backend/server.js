@@ -6,16 +6,18 @@ const mysql = require("mysql2/promise");
 const cors = require("cors");
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
+const { generateAvailableSlots } = require('./lib/slots');
+const { createRateLimiter } = require('./lib/rateLimit');
+const { buildCorsOptions } = require('./lib/corsOptions');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const host = '0.0.0.0'; // Listen on all network interfaces
-
-
+const APP_STARTED_AT = new Date().toISOString();
 
 // --- SECRET KEY (IMPORTANT!) ---
 const JWT_SECRET = process.env.JWT_SECRET;
-if (!JWT_SECRET) {
+if (!JWT_SECRET && process.env.NODE_ENV !== 'test') {
     console.error('FATAL ERROR: JWT_SECRET environment variable is not set.');
     process.exit(1);
 }
@@ -33,10 +35,37 @@ const dbConfig = {
 };
 
 const pool = mysql.createPool(dbConfig);
+const loginRateLimiter = createRateLimiter({
+    windowMs: 15 * 60 * 1000,
+    max: Number(process.env.LOGIN_RATE_LIMIT_MAX || 20),
+    message: 'Too many login attempts. Please try again in 15 minutes.',
+});
 
 // --- MIDDLEWARE ---
-app.use(cors());
+app.use(cors(buildCorsOptions()));
 app.use(express.json());
+
+// --- HEALTH / READINESS ---
+app.get('/api/health', async (req, res) => {
+    const payload = {
+        status: 'ok',
+        service: 'clinicpro-api',
+        uptimeSeconds: Math.floor(process.uptime()),
+        startedAt: APP_STARTED_AT,
+        timestamp: new Date().toISOString(),
+    };
+
+    try {
+        await pool.query('SELECT 1 AS ok');
+        payload.database = 'up';
+        return res.json(payload);
+    } catch (err) {
+        payload.status = 'degraded';
+        payload.database = 'down';
+        payload.message = 'API is up but database is unreachable.';
+        return res.status(503).json(payload);
+    }
+});
 
 // --- UTILITY FUNCTION for error handling ---
 const handleDatabaseError = (res, err) => {
@@ -72,8 +101,8 @@ const authorize = (allowedRoles) => {
     };
 };
 
-// Login Endpoint
-app.post("/api/login", async (req, res) => {
+// Login Endpoint (rate-limited)
+app.post("/api/login", loginRateLimiter, async (req, res) => {
     const { username, password } = req.body;
     if (!username || !password) {
         return res.status(400).json({ message: "Username and password are required." });
@@ -895,31 +924,12 @@ app.get("/api/doctors/:id/availability", authorize(['receptionist', 'patient']),
              WHERE doctor_id = ? AND DATE(schedule_date) = ? AND status IN ('Scheduled', 'Rescheduled')`,
             [id, date]
         );
-        const bookedSlots = new Set(bookedAppointments.map(appt => appt.booked_time));
-        const availableSlots = [];
-
-        for (const slot of doctorAvailabilitySlots) {
-            const startHour = parseInt(slot.start_time.substring(0, 2));
-            const startMin = parseInt(slot.start_time.substring(3, 5));
-            const endHour = parseInt(slot.end_time.substring(0, 2));
-            const endMin = parseInt(slot.end_time.substring(3, 5));
-
-            let currentHour = startHour;
-            let currentMin = startMin;
-
-            while (currentHour < endHour || (currentHour === endHour && currentMin < endMin)) {
-                const timeSlot = `${String(currentHour).padStart(2, '0')}:${String(currentMin).padStart(2, '0')}:00`;
-                if (!bookedSlots.has(timeSlot)) {
-                    availableSlots.push(timeSlot.substring(0, 5));
-                }
-
-                currentMin += slotDurationMinutes;
-                if (currentMin >= 60) {
-                    currentHour += 1;
-                    currentMin = 0;
-                }
-            }
-        }
+        const bookedTimes = bookedAppointments.map((appt) => appt.booked_time);
+        const availableSlots = generateAvailableSlots(
+            doctorAvailabilitySlots,
+            bookedTimes,
+            slotDurationMinutes
+        );
 
         res.json(availableSlots);
     } catch (err) { handleDatabaseError(res, err); }
@@ -1451,7 +1461,7 @@ app.get("/api/branch-manager/reports/insurance-analysis", authorize(['branch man
 // =========================================================================================
 
 // --- NEW PATIENT LOGIN ENDPOINT ---
-app.post("/api/login/patient", async (req, res) => {
+app.post("/api/login/patient", loginRateLimiter, async (req, res) => {
     const { username, password } = req.body; // username = "Anura", password = "03151"
     if (!username || !password) {
         return res.status(400).json({ message: "Username and password are required." });
@@ -1809,7 +1819,11 @@ app.put("/api/profile/change-password", authorize(['admin', 'receptionist', 'bra
         connection.release();
     }
 });
-// KEEP THIS BLOCK AT THE END OF YOUR FILE
-app.listen(PORT, host, () => {
-    console.log(`Server is running on ${host}:${PORT}`);
-});
+// Start only when executed directly (allows Jest to import `app` without listening)
+if (require.main === module) {
+    app.listen(PORT, host, () => {
+        console.log(`Server is running on ${host}:${PORT}`);
+    });
+}
+
+module.exports = { app, pool, loginRateLimiter };
